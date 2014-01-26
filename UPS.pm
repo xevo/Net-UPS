@@ -524,13 +524,13 @@ sub validate_street_address {
     }
     my $xml = $self->access_as_xml . XMLout(\%data, KeepRoot=>1, NoAttr=>1, KeyAttr=>[], XMLDecl=>1);
     
-    warn "REQUEST: $xml\n";
+    #warn "REQUEST: $xml\n";
     
     my $response = XMLin($self->post($self->xav_proxy, $xml),
                                                 KeepRoot=>0, NoAttr=>1,
                                                 KeyAttr=>[], ForceArray=>["AddressValidationResponse", "AddressLine"]);
     
-    warn "RESPONSE:\n" . Dumper($response);
+    #warn "RESPONSE:\n" . Dumper($response);
     
     if ( my $error = $response->{Response}->{Error} ) {
         return $self->set_error( $error->{ErrorDescription} );
