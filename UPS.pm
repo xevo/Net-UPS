@@ -479,12 +479,21 @@ sub validate_street_address {
     if ( $address->name ) {
         $data{AddressValidationRequest}->{AddressKeyFormat}->{ConsigneeName} = $address->name();
     }
+    if ( $address->building_name ) {
+        $data{AddressValidationRequest}->{AddressKeyFormat}->{BuildingName} = $address->building_name();
+    }
+    
+    $data{AddressValidationRequest}->{AddressKeyFormat}->{AddressLine} = [];
     if ( $address->address ) {
-        $data{AddressValidationRequest}->{AddressKeyFormat}->{AddressLine} = $address->address;
+        push(@{ $data{AddressValidationRequest}->{AddressKeyFormat}->{AddressLine} }, $address->address());
     }
     if ( $address->address2 ) {
-        $data{AddressValidationRequest}->{AddressKeyFormat}->{BuildingName} = $address->address2;
+        push(@{ $data{AddressValidationRequest}->{AddressKeyFormat}->{AddressLine} }, $address->address2());
     }
+    if ( $address->address3 ) {
+        push(@{ $data{AddressValidationRequest}->{AddressKeyFormat}->{AddressLine} }, $address->address3());
+    }
+    
     if ( $address->city ) {
         $data{AddressValidationRequest}->{AddressKeyFormat}->{PoliticalDivision2} = $address->city;
     }
@@ -496,8 +505,16 @@ sub validate_street_address {
     }
     if ( $address->postal_code ) {
         my $postal_code = $address->postal_code;
-        $postal_code =~ s/-.*//;
+        if ($postal_code =~ /(\d+)-(\d+)/) {
+            $postal_code = $1;
+            unless ($address->postal_code_extended) {
+                $address->postal_code_extended($2);
+            }
+        }
         $data{AddressValidationRequest}->{AddressKeyFormat}->{PostcodePrimaryLow} = $address->postal_code;
+    }
+    if ( $address->postal_code_extended ) {
+        $data{AddressValidationRequest}->{AddressKeyFormat}->{PostcodeExtendedLow} = $address->postal_code_extended;
     }
     if ( $address->country_code ) {
         if ( length($address->country_code) != 2 ) {
@@ -507,13 +524,13 @@ sub validate_street_address {
     }
     my $xml = $self->access_as_xml . XMLout(\%data, KeepRoot=>1, NoAttr=>1, KeyAttr=>[], XMLDecl=>1);
     
-    #warn "REQUEST: $xml\n";
+    warn "REQUEST: $xml\n";
     
     my $response = XMLin($self->post($self->xav_proxy, $xml),
                                                 KeepRoot=>0, NoAttr=>1,
-                                                KeyAttr=>[], ForceArray=>["AddressValidationResponse"]);
+                                                KeyAttr=>[], ForceArray=>["AddressValidationResponse", "AddressLine"]);
     
-    #warn "RESPONSE:\n" . Dumper($response);
+    warn "RESPONSE:\n" . Dumper($response);
     
     if ( my $error = $response->{Response}->{Error} ) {
         return $self->set_error( $error->{ErrorDescription} );
@@ -536,14 +553,18 @@ sub validate_street_address {
     if ($response->{AddressKeyFormat})
     {
         $address = Net::UPS::StreetAddress->new(
-            quality         => $quality,
-            address         => $response->{AddressKeyFormat}->{AddressLine},
-            address2        => $response->{AddressKeyFormat}->{BuildingName},
-            postal_code     => $response->{AddressKeyFormat}->{PostcodePrimaryLow},
-            city            => $response->{AddressKeyFormat}->{PoliticalDivision2},
-            state           => $response->{AddressKeyFormat}->{PoliticalDivision1},
-            country_code    => $response->{AddressKeyFormat}->{CountryCode},
-            is_residential  => ( $response->{AddressClassification}->{Code} eq "2" ) ? 1 : 0,
+            quality              => $quality,
+            building_name        => $response->{AddressKeyFormat}->{BuildingName},
+            address              => $response->{AddressKeyFormat}->{AddressLine}->[0],
+            address2             => $response->{AddressKeyFormat}->{AddressLine}->[1],
+            address3             => $response->{AddressKeyFormat}->{AddressLine}->[2],
+            postal_code          => $response->{AddressKeyFormat}->{PostcodePrimaryLow},
+            postal_code_extended => $response->{AddressKeyFormat}->{PostcodeExtendedLow},
+            city                 => $response->{AddressKeyFormat}->{PoliticalDivision2},
+            state                => $response->{AddressKeyFormat}->{PoliticalDivision1},
+            country_code         => $response->{AddressKeyFormat}->{CountryCode},
+            is_commercial        => ( $response->{AddressClassification}->{Code} eq "1" ) ? 1 : 0,
+            is_residential       => ( $response->{AddressClassification}->{Code} eq "2" ) ? 1 : 0,
         );
     }
     return $address;
@@ -794,11 +815,13 @@ Validates a given address against UPS' U.S. Street Level Address Validation serv
     my $address = Net::UPS::StreetAddress->new();
     $address->name("John Doe");
     $address->address("123 Test Street");
+    $address->address2("APT A);
     $address->city("New York");
     $address->state("NY");
     $address->postal_code("10007");
     $address->country_code("US");
 
+    # a Net::UPS::StreetAddress object must be passed in, not a Net::UPS::Address object 
     my $address = $ups->validate_street_address($address);
     if ( $ups->errstr )
     {
@@ -808,8 +831,11 @@ Validates a given address against UPS' U.S. Street Level Address Validation serv
             # candidate addresses are not safe to ship to, but it will point you in the right direction
             # so that you can manually correct the address
             print "Possible address (not safe to ship to):\n";
+            print $address->building_name . "\n" if $address->building_name;
             print $address->address . "\n";
-            print $address->city . ", " . $address->state . " " . $address->postal_code . "\n";
+            print $address->address2 . "\n" if $address->address2;
+            print $address->address3 . "\n" if $address->address3;
+            print $address->city . ", " . $address->state . " " . $address->postal_code . "-" . $address->postal_code_extended . "\n";
             print $address->country_code . "\n";
         }
         die $ups->errstr;
@@ -817,13 +843,12 @@ Validates a given address against UPS' U.S. Street Level Address Validation serv
     # the API might have made some changes to the address we gave it
     # this is the sanitized address that UPS says is safe to ship to
     print "Sanitized address:\n";
+    print $address->building_name . "\n" if $address->building_name;
     print $address->address . "\n";
-    print $address->city . ", " . $address->state . " " . $address->postal_code . "\n";
+    print $address->address2 . "\n" if $address->address2;
+    print $address->address3 . "\n" if $address->address3;
+    print $address->city . ", " . $address->state . " " . $address->postal_code . "-" . $address->postal_code_extended . "\n";
     print $address->country_code . "\n";
-
-=pod
-
-=back
 
 =head1 BUGS AND KNOWN ISSUES
 
