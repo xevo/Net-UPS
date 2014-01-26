@@ -8,6 +8,7 @@ t/01.t
 t/02address.t
 UPS.pm
 UPS/Address.pm
+UPS/StreetAddress.pm
 UPS/ErrorHandler.pm
 UPS/Package.pm
 UPS/Rate.pm

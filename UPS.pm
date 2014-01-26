@@ -1,8 +1,5 @@
 package Net::UPS;
 
-# $Id: UPS.pm,v 1.12 2005/11/11 00:06:14 sherzodr Exp $
-
-
 use strict;
 use Carp ('croak');
 use XML::Simple;
@@ -11,17 +8,20 @@ use Net::UPS::ErrorHandler;
 use Net::UPS::Rate;
 use Net::UPS::Service;
 use Net::UPS::Address;
+use Net::UPS::StreetAddress;
 use Net::UPS::Package;
-
+use Data::Dumper;
 
 @Net::UPS::ISA          = ( "Net::UPS::ErrorHandler" );
-$Net::UPS::VERSION      = '0.04';
+$Net::UPS::VERSION      = '0.05';
 $Net::UPS::LIVE         = 0;
 
 sub RATE_TEST_PROXY () { 'https://wwwcie.ups.com/ups.app/xml/Rate'  }
 sub RATE_LIVE_PROXY () { 'https://www.ups.com/ups.app/xml/Rate'     }
 sub AV_TEST_PROXY   () { 'https://wwwcie.ups.com/ups.app/xml/AV'    }
 sub AV_LIVE_PROXY   () { 'https://www.ups.com/ups.app/xml/AV'       }
+sub XAV_TEST_PROXY  () { 'https://wwwcie.ups.com/ups.app/xml/XAV'    }
+sub XAV_LIVE_PROXY  () { 'https://www.ups.com/ups.app/xml/XAV'       }
 
 sub PICKUP_TYPES () {
     return {
@@ -161,6 +161,7 @@ sub _read_args_from_file {
 sub init        {                                                       }
 sub rate_proxy  { $Net::UPS::LIVE ? RATE_LIVE_PROXY : RATE_TEST_PROXY   }
 sub av_proxy    { $Net::UPS::LIVE ? AV_LIVE_PROXY   : AV_TEST_PROXY     }
+sub xav_proxy   { $Net::UPS::LIVE ? XAV_LIVE_PROXY  : XAV_TEST_PROXY    }
 sub cache_life  { return $_[0]->{__args}->{cache_life} = $_[1]          }
 sub cache_root  { return $_[0]->{__args}->{cache_root} = $_[1]          }
 sub userid      { return $_[0]->{__userid}                              }
@@ -452,6 +453,102 @@ sub validate_address {
     return \@addresses;
 }
 
+sub validate_street_address {
+    my $self    = shift;
+    my ($address, $args) = @_;
+
+    croak "validate_street_address(): usage error" unless defined($address);
+    
+    unless ( ref $address ) {
+        $address = {postal_code => $address};
+    }
+    if ( ref $address eq 'HASH' ) {
+        $address = Net::UPS::StreetAddress->new(%$address);
+    }
+    $args ||= {};
+    
+    my %data = (
+        AddressValidationRequest    => {
+            Request => {
+                RequestAction   => "XAV",
+                RequestOption   => "3",
+                TransactionReference => $self->transaction_reference(),
+            }
+        }
+    );
+    if ( $address->name ) {
+        $data{AddressValidationRequest}->{AddressKeyFormat}->{ConsigneeName} = $address->name();
+    }
+    if ( $address->address ) {
+        $data{AddressValidationRequest}->{AddressKeyFormat}->{AddressLine} = $address->address;
+    }
+    if ( $address->address2 ) {
+        $data{AddressValidationRequest}->{AddressKeyFormat}->{BuildingName} = $address->address2;
+    }
+    if ( $address->city ) {
+        $data{AddressValidationRequest}->{AddressKeyFormat}->{PoliticalDivision2} = $address->city;
+    }
+    if ( $address->state ) {
+        if ( length($address->state) != 2 ) {
+            croak "PoliticalDivision1 (state) has to be two letters long";
+        }
+        $data{AddressValidationRequest}->{AddressKeyFormat}->{PoliticalDivision1} = $address->state;
+    }
+    if ( $address->postal_code ) {
+        my $postal_code = $address->postal_code;
+        $postal_code =~ s/-.*//;
+        $data{AddressValidationRequest}->{AddressKeyFormat}->{PostcodePrimaryLow} = $address->postal_code;
+    }
+    if ( $address->country_code ) {
+        if ( length($address->country_code) != 2 ) {
+            croak "CountryCode has to be two letters long";
+        }
+        $data{AddressValidationRequest}->{AddressKeyFormat}->{CountryCode} = $address->country_code;
+    }
+    my $xml = $self->access_as_xml . XMLout(\%data, KeepRoot=>1, NoAttr=>1, KeyAttr=>[], XMLDecl=>1);
+    
+    #warn "REQUEST: $xml\n";
+    
+    my $response = XMLin($self->post($self->xav_proxy, $xml),
+                                                KeepRoot=>0, NoAttr=>1,
+                                                KeyAttr=>[], ForceArray=>["AddressValidationResponse"]);
+    
+    #warn "RESPONSE:\n" . Dumper($response);
+    
+    if ( my $error = $response->{Response}->{Error} ) {
+        return $self->set_error( $error->{ErrorDescription} );
+    }
+    if ( $response->{NoCandidatesIndicator} )
+    {
+        return $self->set_error("The Address Matching System is not able to match an address from any other one in the database.");
+    }
+    my $quality = 0;
+    if ( $response->{AmbiguousAddressIndicator} )
+    {
+        $self->set_error("The Address Matching System is not able to explicitly differentiate an address from any other one in the database.");
+    }
+    elsif ( $response->{ValidAddressIndicator} )
+    {
+        $quality = 1;
+    }
+    
+    my $address;
+    if ($response->{AddressKeyFormat})
+    {
+        $address = Net::UPS::StreetAddress->new(
+            quality         => $quality,
+            address         => $response->{AddressKeyFormat}->{AddressLine},
+            address2        => $response->{AddressKeyFormat}->{BuildingName},
+            postal_code     => $response->{AddressKeyFormat}->{PostcodePrimaryLow},
+            city            => $response->{AddressKeyFormat}->{PoliticalDivision2},
+            state           => $response->{AddressKeyFormat}->{PoliticalDivision1},
+            country_code    => $response->{AddressKeyFormat}->{CountryCode},
+            is_residential  => ( $response->{AddressClassification}->{Code} eq "2" ) ? 1 : 0,
+        );
+    }
+    return $address;
+}
+
 sub generate_cache_key {
     my $self = shift;
     my ($from, $to, $packages, $args) = @_;
@@ -689,6 +786,40 @@ C<%args>, if present, contains arguments that effect validation results. As of t
             printf("%s, %s %s\n", $_->city, $_->state, $_->postal_code);
         }
     }
+
+=item validate_street_address ($address)
+
+Validates a given address against UPS' U.S. Street Level Address Validation service.
+
+    my $address = Net::UPS::StreetAddress->new();
+    $address->name("John Doe");
+    $address->address("123 Test Street");
+    $address->city("New York");
+    $address->state("NY");
+    $address->postal_code("10007");
+    $address->country_code("US");
+
+    my $address = $ups->validate_street_address($address);
+    if ( $ups->errstr )
+    {
+        if ($address)
+        {
+            # if an address was returned but an errstr is set it means that this is a "candidate" address
+            # candidate addresses are not safe to ship to, but it will point you in the right direction
+            # so that you can manually correct the address
+            print "Possible address (not safe to ship to):\n";
+            print $address->address . "\n";
+            print $address->city . ", " . $address->state . " " . $address->postal_code . "\n";
+            print $address->country_code . "\n";
+        }
+        die $ups->errstr;
+    }
+    # the API might have made some changes to the address we gave it
+    # this is the sanitized address that UPS says is safe to ship to
+    print "Sanitized address:\n";
+    print $address->address . "\n";
+    print $address->city . ", " . $address->state . " " . $address->postal_code . "\n";
+    print $address->country_code . "\n";
 
 =pod
 
