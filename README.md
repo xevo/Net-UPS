@@ -11,7 +11,7 @@ Street level validation usage:
     my $address = Net::UPS::StreetAddress->new();
     $address->name("John Doe");
     $address->address("123 Test Street");
-    $address->address2("APT A);
+    $address->address2("APT A");
     $address->city("New York");
     $address->state("NY");
     $address->postal_code("10007");

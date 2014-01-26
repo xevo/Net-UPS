@@ -549,10 +549,10 @@ sub validate_street_address {
         $quality = 1;
     }
     
-    my $address;
+    my $response_address;
     if ($response->{AddressKeyFormat})
     {
-        $address = Net::UPS::StreetAddress->new(
+        $response_address = Net::UPS::StreetAddress->new(
             quality              => $quality,
             building_name        => $response->{AddressKeyFormat}->{BuildingName},
             address              => $response->{AddressKeyFormat}->{AddressLine}->[0],
@@ -567,7 +567,7 @@ sub validate_street_address {
             is_residential       => ( $response->{AddressClassification}->{Code} eq "2" ) ? 1 : 0,
         );
     }
-    return $address;
+    return $response_address;
 }
 
 sub generate_cache_key {
@@ -815,7 +815,7 @@ Validates a given address against UPS' U.S. Street Level Address Validation serv
     my $address = Net::UPS::StreetAddress->new();
     $address->name("John Doe");
     $address->address("123 Test Street");
-    $address->address2("APT A);
+    $address->address2("APT A");
     $address->city("New York");
     $address->state("NY");
     $address->postal_code("10007");
